@@ -6,7 +6,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-sqlite:////data/sceneseek.db}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-${DATABASE_URL:-sqlite:////data/sceneseek.db}}
+      DJANGO_SETTINGS_MODULE: sceneseek_project.settings
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+      PYTHONPATH: /app:/app/worker
       UPLOAD_DIR: /data/uploads
       REFERENCE_INDEX_PATH: /data/reference/index.json
       EVALUATION_REPORT_PATH: /data/reports/evaluation.json
@@ -37,7 +41,7 @@ services:
       - ./data:/data
       - ./reports:/data/reports
     ports:
-      - "8000:7860"
+      - "8000:8000"
     restart: unless-stopped
 
   worker:
@@ -51,7 +55,10 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-sqlite:////data/sceneseek.db}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-${DATABASE_URL:-sqlite:////data/sceneseek.db}}
+      DJANGO_SETTINGS_MODULE: sceneseek_project.settings
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,api,worker}
       UPLOAD_DIR: /data/uploads
       REFERENCE_INDEX_PATH: /data/reference/index.json
       WORKER_STATUS_PATH: /data/worker_status.json

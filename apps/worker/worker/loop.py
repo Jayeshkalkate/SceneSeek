@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import os
 import json
 import logging
 import mimetypes
@@ -10,12 +11,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from app.config import get_settings
-from app.database import SessionLocal, init_db
-from app.models import Job, utcnow
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "sceneseek_project.settings")
+import django
+django.setup()
+from django.db import transaction
+from django.utils import timezone as django_timezone
+from core.models import Job
+
+def utcnow():
+    return django_timezone.now()
 from app.services.media import UnsupportedMedia, dedupe_paths, extract_video_frames, prepare_image, probe_video, validate_image_bytes
 from app.services.storage import cleanup_local_uploads, delete_upload, read_upload
 from worker.pipeline.recognize import recognize
-from sqlalchemy import select
 
 logger = logging.getLogger("sceneseek.worker")
 
@@ -33,12 +40,15 @@ def _write_heartbeat(state: str, **extra: Any) -> None:
         logger.warning("Could not write worker heartbeat")
 
 
+
 def recover_expired_jobs() -> int:
     settings = get_settings()
     cutoff = utcnow() - timedelta(seconds=max(60, settings.job_lease_seconds))
     recovered = 0
-    with SessionLocal() as db:
-        stale_jobs = db.scalars(select(Job).where(Job.status == "processing", Job.started_at < cutoff)).all()
+    with transaction.atomic():
+        stale_jobs = list(Job.objects.select_for_update(skip_locked=True).filter(
+            status="processing", started_at__lt=cutoff
+        ))
         for job in stale_jobs:
             if job.attempts < job.max_attempts:
                 job.status = "queued"
@@ -48,37 +58,32 @@ def recover_expired_jobs() -> int:
                 job.error = "Worker stopped before the job could finish. Please upload again."
                 job.finished_at = utcnow()
             job.started_at = None
+            job.save(update_fields=["status", "error", "finished_at", "started_at"])
             recovered += 1
-        if recovered:
-            db.commit()
     return recovered
 
 
 def _claim_one() -> dict[str, Any] | None:
-    """Postgres uses SKIP LOCKED; the status predicate also protects SQLite single-worker dev."""
-    with SessionLocal() as db:
-        with db.begin():
-            stmt = select(Job).where(Job.status == "queued").order_by(Job.created_at).limit(1).with_for_update(skip_locked=True)
-            job = db.scalar(stmt)
-            if not job:
-                return None
-            job.status = "processing"
-            job.attempts += 1
-            job.started_at = utcnow()
-            job.error = None
-            job.latency_ms = None
-            snapshot = {"id": job.id, "input_kind": job.input_kind, "input_path": job.input_path,
-                        "mime": job.mime, "created_at": job.created_at}
-        return snapshot
+    """Claim a queue item transactionally; PostgreSQL supports SKIP LOCKED."""
+    with transaction.atomic():
+        job = Job.objects.select_for_update(skip_locked=True).filter(
+            status="queued"
+        ).order_by("created_at").first()
+        if not job:
+            return None
+        job.status = "processing"
+        job.attempts += 1
+        job.started_at = utcnow()
+        job.error = None
+        job.latency_ms = None
+        job.save(update_fields=["status", "attempts", "started_at", "error", "latency_ms"])
+        return {"id": job.id, "input_kind": job.input_kind, "input_path": job.input_path,
+                "mime": job.mime, "created_at": job.created_at}
 
 
 def _save_progress(job_id: str, progress_note: str | None = None) -> None:
     # Touch started_at as a lease heartbeat. Progress is logged rather than exposed as false precision.
-    with SessionLocal() as db:
-        job = db.get(Job, job_id)
-        if job and job.status == "processing":
-            job.started_at = utcnow()
-            db.commit()
+    Job.objects.filter(pk=job_id, status="processing").update(started_at=utcnow())
     if progress_note:
         logger.info(progress_note, extra={"job_id": job_id})
 
@@ -136,47 +141,47 @@ def process_one() -> bool:
     try:
         result = _run_pipeline(snapshot)
         result["latency_ms"] = int((time.perf_counter() - start) * 1000)
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if not job:
-                delete_upload(snapshot.get("input_path"))
-                return True
-            job.result = result
-            job.status = "done"
-            job.error = None
-            job.input_path = None
-            job.finished_at = utcnow()
-            job.latency_ms = result["latency_ms"]
-            db.commit()
+        job = Job.objects.filter(pk=job_id).first()
+        if not job:
+            delete_upload(snapshot.get("input_path"))
+            return True
+        job.result = result
+        job.status = "done"
+        job.error = None
+        job.input_path = None
+        job.finished_at = utcnow()
+        job.latency_ms = result["latency_ms"]
+        job.save(update_fields=["result", "status", "error", "input_path", "finished_at", "latency_ms"])
         delete_upload(snapshot.get("input_path"))
         logger.info("Job completed", extra={"job_id": job_id, "latency_ms": result["latency_ms"]})
     except UnsupportedMedia as exc:
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if job:
-                job.status = "failed"
-                job.error = str(exc)
-                job.input_path = None
-                job.finished_at = utcnow()
-                job.latency_ms = int((time.perf_counter() - start) * 1000)
-                db.commit()
+        job = Job.objects.filter(pk=job_id).first()
+        if job:
+            job.status = "failed"
+            job.error = str(exc)
+            job.input_path = None
+            job.finished_at = utcnow()
+            job.latency_ms = int((time.perf_counter() - start) * 1000)
+            job.save(update_fields=["status", "error", "input_path", "finished_at", "latency_ms"])
         delete_upload(snapshot.get("input_path"))
         logger.warning("Job rejected by media validation", extra={"job_id": job_id})
     except Exception as exc:
         logger.exception("Job processing failed", extra={"job_id": job_id})
         terminal = False
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            if job:
-                terminal = job.attempts >= job.max_attempts
-                job.status = "failed" if terminal else "queued"
-                job.error = "Recognition failed after retries. Please try again." if terminal else "Temporary processing issue; the job will retry."
-                if terminal:
-                    job.input_path = None
-                    job.finished_at = utcnow()
-                else:
-                    job.started_at = None
-                db.commit()
+        job = Job.objects.filter(pk=job_id).first()
+        if job:
+            terminal = job.attempts >= job.max_attempts
+            job.status = "failed" if terminal else "queued"
+            job.error = "Recognition failed after retries. Please try again." if terminal else "Temporary processing issue; the job will retry."
+            update_fields = ["status", "error"]
+            if terminal:
+                job.input_path = None
+                job.finished_at = utcnow()
+                update_fields += ["input_path", "finished_at"]
+            else:
+                job.started_at = None
+                update_fields.append("started_at")
+            job.save(update_fields=update_fields)
         if terminal:
             delete_upload(snapshot.get("input_path"))
     finally:
@@ -185,7 +190,6 @@ def process_one() -> bool:
 
 
 async def serve() -> None:
-    init_db()
     settings = get_settings()
     logger.info("SceneSeek worker started")
     _write_heartbeat("idle")

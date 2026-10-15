@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_name: str = "SceneSeek API"
+    frontend_url: str = ""
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     api_rate_limit_per_minute: int = 10

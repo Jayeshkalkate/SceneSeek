@@ -4,7 +4,7 @@
 Browser / Next.js
       │ multipart upload (HTTPS in deployment)
       ▼
-FastAPI ── validates extension/MIME/size/image bytes ──> private storage
+Django API ── validates extension/MIME/size/image bytes ──> private storage
       │
       └── creates a persistent job ──> SQLAlchemy DB queue
                                       │ claim with FOR UPDATE SKIP LOCKED on PostgreSQL

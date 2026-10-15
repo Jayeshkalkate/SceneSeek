@@ -16,7 +16,9 @@ RUN if [ "$INSTALL_CLIP" = "true" ]; then pip install --no-cache-dir -r /app/app
 RUN if [ "$INSTALL_OCR" = "true" ]; then apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir -r /app/apps/worker/requirements-ocr.txt; fi
 RUN if [ "$INSTALL_ASR" = "true" ]; then pip install --no-cache-dir -r /app/apps/worker/requirements-asr.txt; fi
 COPY apps/api/app /app/apps/api/app
+COPY apps/api/core /app/core
+COPY apps/api/sceneseek_project /app/sceneseek_project
 COPY apps/worker/worker /app/apps/worker/worker
-ENV PYTHONPATH=/app/apps/api:/app/apps/worker
+ENV PYTHONPATH=/app:/app/apps/api:/app/apps/worker DJANGO_SETTINGS_MODULE=sceneseek_project.settings
 RUN mkdir -p /data/uploads /data/reference
 CMD ["python", "-m", "worker.main"]

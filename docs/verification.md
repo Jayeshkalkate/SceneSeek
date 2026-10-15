@@ -1,16 +1,17 @@
 # Verification notes for the SceneSeek archive
 
-Checks run while preparing this ZIP:
+Checks run while preparing this ZIP (2026-10-15):
 
 - `python -m compileall -q apps/api/app apps/worker/worker tools` — passed.
-- `PYTHONPATH=apps/api:apps/worker pytest -q` — **11 passed**.
+- `PYTHONPATH=apps/api:apps/worker pytest -q` — **22 passed**, including private-job authorization and API-root redirect regression tests.
 - Synthetic 4-frame reference index built with `tools/index_reference.py`; recognition of an exact known frame returned the expected synthetic title at score 1.0 — passed. This synthetic test validates wiring only and is not a real-world accuracy metric.
-- JSON and YAML configuration parsing — passed.
+- `python -m compileall -q apps/api/app apps/worker/worker tools` — passed.
+- `render.yaml` YAML parsing and two-service Blueprint check — passed.
 - TypeScript transpilation of all four TSX app files — syntax passed.
 
 Not completed in this environment:
 
-- `npm install`, Next.js type-check/lint/build — package download timed out before dependencies were installed.
+- `npm install --no-audit --no-fund` — timed out while downloading packages in this environment; Next.js type-check/lint/build remain unverified.
 - Docker image build / compose run — no Docker runtime was available.
 - Real-media evaluation, provider free-tier verification, live deployment, restore/backup drill, privacy/rights review, and independent security review.
 

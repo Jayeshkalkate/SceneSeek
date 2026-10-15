@@ -4,3 +4,5 @@ import os
 os.environ.setdefault("RUN_EMBEDDED_WORKER", "false")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+
+os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/sceneseek-test.db")

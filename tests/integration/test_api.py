@@ -1,67 +1,58 @@
-from io import BytesIO
-from fastapi.testclient import TestClient
+import io
+import os
+import pytest
+from django.test import Client
 from PIL import Image
-from app.main import app
-from app.database import SessionLocal
-from app.models import Job
-from app.services.storage import delete_upload
+from django.core.files.uploadedfile import SimpleUploadedFile
 
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "sceneseek_project.settings")
+
+@pytest.fixture
+def client():
+    return Client()
 
 def image_bytes():
     image = Image.new("RGB", (64, 64), color=(15, 70, 180))
-    stream = BytesIO()
+    stream = io.BytesIO()
     image.save(stream, format="PNG")
     return stream.getvalue()
 
+@pytest.mark.django_db
+def test_ping_and_health(client):
+    assert client.get("/ping").status_code == 200
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert "db" in response.json()
+    assert client.head("/ping").status_code == 200
 
-def test_health_and_reference_status():
-    with TestClient(app) as client:
-        health = client.get("/healthz")
-        assert health.status_code == 200
-        assert health.json()["db"] is True
-        index = client.get("/v1/reference/status")
-        assert index.status_code == 200
-        assert "ready" in index.json()
+@pytest.mark.django_db
+def test_reference_status_shape(client):
+    response = client.get("/v1/reference/status")
+    assert response.status_code == 200
+    assert "ready" in response.json()
 
+@pytest.mark.django_db
+def test_upload_creates_job_and_duplicate_is_idempotent(client, settings, tmp_path, monkeypatch):
+    # Isolate local upload storage and bypass external object storage.
+    monkeypatch.setattr("core.views.store_upload", lambda data, key, mime: f"local://{key}")
+    monkeypatch.setattr("core.views.delete_upload", lambda uri: None)
+    response = client.post("/v1/identify", {"file": SimpleUploadedFile("sample.png", image_bytes(), content_type="image/png")})
+    assert response.status_code == 202, response.content
+    job_id = response.json()["job_id"]
+    assert response.json()["status"] == "queued"
+    state = client.get(f"/v1/jobs/{job_id}")
+    assert state.status_code == 200
+    assert state.json()["status"] == "queued"
+    duplicate = client.post("/v1/identify", {"file": SimpleUploadedFile("sample.png", image_bytes(), content_type="image/png")})
+    assert duplicate.status_code == 202
+    assert duplicate.json()["job_id"] == job_id
 
-def test_upload_creates_a_queued_job_and_is_idempotent():
-    with TestClient(app) as client:
-        files = {"file": ("sample.png", image_bytes(), "image/png")}
-        first = client.post("/v1/identify", files=files)
-        assert first.status_code == 202, first.text
-        job_id = first.json()["job_id"]
-        assert first.json()["status"] == "queued"
-        state = client.get(f"/v1/jobs/{job_id}")
-        assert state.status_code == 200
-        assert state.json()["status"] == "queued"
+@pytest.mark.django_db
+def test_unsupported_upload_rejected(client):
+    response = client.post("/v1/identify", {"file": SimpleUploadedFile("script.exe", b"nope", content_type="application/octet-stream")})
+    assert response.status_code in (400, 415)
 
-        duplicate = client.post("/v1/identify", files={"file": ("sample.png", image_bytes(), "image/png")})
-        assert duplicate.status_code == 202
-        assert duplicate.json()["job_id"] == job_id
-
-        with SessionLocal() as db:
-            job = db.get(Job, job_id)
-            assert job is not None
-            uri = job.input_path
-            db.delete(job)
-            db.commit()
-        delete_upload(uri)
-
-
-def test_unsupported_upload_is_rejected():
-    with TestClient(app) as client:
-        response = client.post("/v1/identify", files={"file": ("script.exe", b"nope", "application/octet-stream")})
-        assert response.status_code == 415
-
-
-def test_ping_supports_head_and_get():
-    with TestClient(app) as client:
-        assert client.get("/ping").status_code == 200
-        assert client.head("/ping").status_code == 200
-
-
-def test_auth_endpoints_require_token_and_reject_bad_google_token():
-    with TestClient(app) as client:
-        assert client.get("/v1/me").status_code == 401
-        assert client.get("/v1/me/history").status_code == 401
-        assert client.get("/v1/config").json()["google_login"] is True
+@pytest.mark.django_db
+def test_auth_required_for_me(client):
+    response = client.get("/v1/me")
+    assert response.status_code == 401

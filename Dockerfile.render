@@ -1,20 +1,12 @@
-# One free Render web service = API + embedded queue worker (Render free has no background workers).
-FROM python:3.11-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
-COPY apps/worker/requirements.txt /app/apps/worker/requirements.txt
-COPY apps/api/requirements.txt /app/apps/api/requirements.txt
-RUN pip install --no-cache-dir -r /app/apps/worker/requirements.txt
-COPY apps/api/app /app/apps/api/app
-COPY apps/worker/worker /app/apps/worker/worker
-COPY data/reference /app/data/reference
-ENV PYTHONPATH=/app/apps/api:/app/apps/worker \
-    RUN_EMBEDDED_WORKER=true \
-    UPLOAD_DIR=/tmp/uploads \
-    WORKER_STATUS_PATH=/tmp/worker_status.json \
-    REFERENCE_INDEX_PATH=/app/data/reference/index.json
-RUN mkdir -p /tmp/uploads
-# Render injects $PORT. --proxy-headers so rate limiting sees real client IPs, not Render's proxy.
-CMD ["sh", "-c", "uvicorn app.main:app --app-dir apps/api --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libglib2.0-0 libgl1 && rm -rf /var/lib/apt/lists/*
+COPY apps/api/requirements.txt /app/requirements.txt
+RUN pip install --upgrade pip && pip install -r /app/requirements.txt
+COPY apps/api /app
+COPY apps/worker /app/worker
+ENV PYTHONPATH=/app:/app/worker
+RUN mkdir -p /data/uploads /data/reference /data/reports
+EXPOSE 8000
+CMD ["sh", "-c", "python manage.py migrate --fake-initial && gunicorn sceneseek_project.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120"]

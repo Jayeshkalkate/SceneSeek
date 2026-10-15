@@ -17,12 +17,16 @@ services:
         sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
       - key: RUN_EMBEDDED_WORKER
         value: "true"
       - key: ENABLE_ONLINE_ANIME
         value: "true"
       - key: APP_ENV
         value: production
+      - key: FRONTEND_URL
+        value: https://sceneseek-web.onrender.com
       - key: OMDB_API_KEY
         sync: false
 
@@ -37,3 +41,5 @@ services:
     envVars:
       - key: NEXT_PUBLIC_API_URL   # your API URL, e.g. https://sceneseek-api.onrender.com
         sync: false
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://sceneseek-web.onrender.com
