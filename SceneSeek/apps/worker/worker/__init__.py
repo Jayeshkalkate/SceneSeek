@@ -1,0 +1,1 @@
+"""SceneSeek independent recognition worker."""
