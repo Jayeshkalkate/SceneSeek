@@ -1,1 +1,0 @@
-"""SceneSeek FastAPI application."""
