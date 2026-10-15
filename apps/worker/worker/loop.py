@@ -189,28 +189,51 @@ def process_one() -> bool:
     return True
 
 
+def _tick(cleanup_due: bool) -> bool:
+    """One unit of work, always executed on the same thread so DB connections are reused and closed properly."""
+    from django.db import close_old_connections
+    close_old_connections()
+    try:
+        recover_expired_jobs()
+        worked = process_one()
+        if cleanup_due:
+            cleanup_local_uploads(get_settings().upload_ttl_hours * 3600)
+        return worked
+    finally:
+        close_old_connections()
+
+
 async def serve() -> None:
+    from concurrent.futures import ThreadPoolExecutor
     settings = get_settings()
     logger.info("SceneSeek worker started")
     _write_heartbeat("idle")
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sceneseek-job")
+    loop = asyncio.get_running_loop()
     last_cleanup = 0.0
-    while True:
-        try:
-            await asyncio.to_thread(recover_expired_jobs)
-            worked = await asyncio.to_thread(process_one)
-            now = time.monotonic()
-            if now - last_cleanup > 3600:
-                await asyncio.to_thread(cleanup_local_uploads, settings.upload_ttl_hours * 3600)
-                last_cleanup = now
-            if not worked:
-                await asyncio.sleep(settings.worker_poll_seconds)
-        except asyncio.CancelledError:
-            _write_heartbeat("stopping")
-            raise
-        except Exception:
-            logger.exception("Worker loop error")
-            _write_heartbeat("degraded")
-            await asyncio.sleep(max(settings.worker_poll_seconds, 3.0))
+    failures = 0
+    try:
+        while True:
+            try:
+                now = time.monotonic()
+                due = now - last_cleanup > 3600
+                worked = await loop.run_in_executor(executor, _tick, due)
+                if due:
+                    last_cleanup = now
+                failures = 0
+                if not worked:
+                    await asyncio.sleep(settings.worker_poll_seconds)
+            except asyncio.CancelledError:
+                _write_heartbeat("stopping")
+                raise
+            except Exception:
+                failures += 1
+                logger.exception("Worker loop error")
+                _write_heartbeat("degraded")
+                # Back off (max 30 s) so a sleeping Neon database or an outage is not hammered.
+                await asyncio.sleep(min(30.0, max(settings.worker_poll_seconds, 3.0) * failures))
+    finally:
+        executor.shutdown(wait=False)
 
 
 def main() -> None:

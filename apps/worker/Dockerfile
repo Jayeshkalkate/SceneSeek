@@ -19,6 +19,6 @@ COPY apps/api/app /app/apps/api/app
 COPY apps/api/core /app/core
 COPY apps/api/sceneseek_project /app/sceneseek_project
 COPY apps/worker/worker /app/apps/worker/worker
-ENV PYTHONPATH=/app:/app/apps/api:/app/apps/worker DJANGO_SETTINGS_MODULE=sceneseek_project.settings
+ENV PYTHONPATH=/app:/app/apps/api:/app/apps/worker DJANGO_SETTINGS_MODULE=sceneseek_project.settings DATA_DIR=/data
 RUN mkdir -p /data/uploads /data/reference
 CMD ["python", "-m", "worker.main"]

@@ -220,3 +220,38 @@ def anilist_by_id(anilist_id: int) -> dict | None:
             "genres": m.get("genres") or [], "poster_url": (m.get("coverImage") or {}).get("large"),
             "rating": {"value": m.get("averageScore"), "source": "AniList (/100)"}, "external_url": m.get("siteUrl"),
             "provider": "AniList"}
+
+
+def tvmaze_by_id(show_id: int) -> dict | None:
+    try:
+        r = httpx.get(f"https://api.tvmaze.com/shows/{int(show_id)}", timeout=TIMEOUT)
+        r.raise_for_status()
+        show = r.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    prem = show.get("premiered") or ""
+    return {"title": show.get("name") or "Untitled", "year": int(prem[:4]) if prem[:4].isdigit() else None,
+            "synopsis": re.sub(r"<[^>]+>", "", show.get("summary") or "")[:1500], "genres": show.get("genres") or [],
+            "poster_url": (show.get("image") or {}).get("original") or (show.get("image") or {}).get("medium"),
+            "rating": {"value": (show.get("rating") or {}).get("average"), "source": "TVmaze"},
+            "external_url": show.get("url"), "provider": "TVmaze"}
+
+
+def itunes_by_id(track_id: int) -> dict | None:
+    try:
+        r = httpx.get("https://itunes.apple.com/lookup", params={"id": int(track_id)}, timeout=TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("results") or []
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    if not items:
+        return None
+    m = items[0]
+    rel = (m.get("releaseDate") or "")[:4]
+    art = m.get("artworkUrl100")
+    return {"title": m.get("trackName") or "Untitled", "year": int(rel) if rel.isdigit() else None,
+            "synopsis": (m.get("longDescription") or m.get("shortDescription") or "")[:1500],
+            "genres": [m["primaryGenreName"]] if m.get("primaryGenreName") else [],
+            "poster_url": art.replace("100x100", "400x600") if art else None,
+            "rating": {"value": m.get("contentAdvisoryRating"), "source": "Content rating"},
+            "external_url": m.get("trackViewUrl"), "provider": "Apple iTunes Search"}

@@ -8,7 +8,10 @@ urlpatterns = [
     path("v1/config", views.public_config, name="public-config"),
     path("v1/auth/google", views.auth_google, name="auth-google"),
     path("v1/me", views.me, name="me"),
+    path("v1/me/delete", views.delete_account, name="delete-account"),
     path("v1/me/history", views.my_history, name="my-history"),
+    path("v1/me/history/clear", views.history_clear, name="history-clear"),
+    path("v1/me/history/<str:job_id>", views.history_item, name="history-item"),
     path("v1/identify", views.identify, name="identify"),
     path("v1/jobs/<str:job_id>", views.get_job, name="job-status"),
     path("v1/feedback", views.submit_feedback, name="feedback"),
@@ -18,3 +21,6 @@ urlpatterns = [
     path("v1/search", views.search, name="search"),
     path("v1/reference/status", views.reference_status, name="reference-status"),
 ]
+
+handler404 = "core.views.not_found"
+handler500 = "core.views.server_error"

@@ -1,34 +1,74 @@
-# Secrets
+# ───────────── Secrets ─────────────
 .env
-.env.*.local
+.env.*
 !.env.example
+*.pem
+*.key
 
-# Python
+# ───────────── Python ─────────────
 __pycache__/
 *.py[cod]
-.pytest_cache/
+*$py.class
 .venv/
 venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+pip-wheel-metadata/
 
-# Node
+# ───────────── Django ─────────────
+# Output of `python manage.py collectstatic` (STATIC_ROOT)
+apps/api/staticfiles/
+staticfiles/
+# Uploaded media, if you ever add MEDIA_ROOT
+media/
+*.log
+local_settings.py
+
+# ───────────── Node / Next.js ─────────────
 node_modules/
 .next/
+out/
 dist/
 coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.vercel/
 
-# Runtime data and private uploads
+# ───────────── Runtime data & private uploads ─────────────
 data/uploads/*
 !data/uploads/.gitkeep
 data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 data/*.sqlite*
+data/worker_status.json
+reports/*
+!reports/.gitkeep
 reference_index.json
 
-# Model caches
+# ───────────── Model caches (anchored on purpose) ─────────────
 .cache/
-models/
+/models/
+*.onnx
+*.pt
+*.safetensors
 
-# OS / editor
+# ───────────── OS / editor ─────────────
 .DS_Store
+Thumbs.db
+desktop.ini
 .vscode/
 .idea/
-*.tsbuildinfo
+*.swp
+*.swo

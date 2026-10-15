@@ -24,6 +24,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body>
+        <a className="skip-link" href="#main">Skip to content</a>
         <div className="ambient ambient-blue" aria-hidden="true" />
         <div className="ambient ambient-purple" aria-hidden="true" />
         {children}

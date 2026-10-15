@@ -8,6 +8,8 @@ import httpx
 from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import Count
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
 from django.http import JsonResponse, HttpResponseRedirect
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -66,10 +68,29 @@ def _user_json(user):
     return {"id": user.id, "email": user.email, "name": user.name, "picture": user.picture}
 
 def _job_json(job):
+    from core.models import Job
     progress = {"queued": 5, "processing": 60, "done": 100, "failed": 100}.get(job.status, 0)
-    return {"id": job.id, "status": job.status, "progress": progress, "result": job.result,
+    data = {"id": job.id, "status": job.status, "progress": progress, "result": job.result,
             "error": job.error, "created_at": job.created_at.isoformat(),
-            "finished_at": job.finished_at.isoformat() if job.finished_at else None}
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "attempts": job.attempts}
+    if job.status == "queued":
+        data["queue_ahead"] = Job.objects.filter(status="queued", created_at__lt=job.created_at).count()
+    return data
+
+
+def _json_ok(payload, status=200):
+    response = JsonResponse(payload, status=status)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def not_found(request, exception=None):
+    return _error("The requested endpoint does not exist.", 404)
+
+
+def server_error(request):
+    return _error("Something went wrong on our side. Please try again in a moment.", 500)
 
 @require_http_methods(["GET", "HEAD"])
 def root(request):
@@ -105,7 +126,11 @@ def health(request):
 @require_http_methods(["GET"])
 def public_config(request):
     return JsonResponse({"google_login": bool(settings.GOOGLE_CLIENT_ID),
-                         "google_client_id": settings.GOOGLE_CLIENT_ID, "require_login": settings.REQUIRE_LOGIN})
+                         "google_client_id": settings.GOOGLE_CLIENT_ID, "require_login": settings.REQUIRE_LOGIN,
+                         "max_image_mb": settings.MAX_IMAGE_BYTES // (1024 * 1024),
+                         "max_video_mb": settings.MAX_VIDEO_BYTES // (1024 * 1024),
+                         "max_video_seconds": settings.MAX_VIDEO_SECONDS,
+                         "online_anime": settings.ENABLE_ONLINE_ANIME})
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -147,12 +172,59 @@ def my_history(request):
     if not user:
         return _error("Please sign in with Google.", 401)
     items = []
-    for job in Job.objects.filter(user_id=user.id).order_by("-created_at")[:20]:
+    try:
+        limit = max(1, min(int(request.GET.get("limit", "20")), settings.HISTORY_LIMIT))
+    except ValueError:
+        limit = 20
+    for job in Job.objects.filter(user_id=user.id).order_by("-created_at")[:limit]:
         top = ((job.result or {}).get("candidates") or [None])[0]
         items.append({"job_id": job.id, "status": job.status, "created_at": job.created_at.isoformat(),
                       "title": top.get("title") if top else None, "title_id": top.get("title_id") if top else None,
                       "band": (job.result or {}).get("band")})
-    return JsonResponse({"items": items})
+    return _json_ok({"items": items})
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def history_item(request, job_id):
+    """Delete one of the signed-in user's past searches."""
+    from core.models import Job
+    user = _require_user(request)
+    if not user:
+        return _error("Please sign in with Google.", 401)
+    job = Job.objects.filter(pk=job_id, user_id=user.id).first()
+    if not job:
+        return _error("That search was not found.", 404)
+    delete_upload(job.input_path)
+    job.delete()
+    return JsonResponse({"deleted": 1})
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def history_clear(request):
+    """Delete every past search of the signed-in user."""
+    from core.models import Job
+    user = _require_user(request)
+    if not user:
+        return _error("Please sign in with Google.", 401)
+    jobs = Job.objects.filter(user_id=user.id)
+    for job in jobs.exclude(input_path__isnull=True):
+        delete_upload(job.input_path)
+    deleted, _ = jobs.delete()
+    return JsonResponse({"deleted": deleted})
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def delete_account(request):
+    """Erase the account and everything stored for it (privacy: right to erasure)."""
+    from core.models import Job, User
+    user = _require_user(request)
+    if not user:
+        return _error("Please sign in with Google.", 401)
+    for job in Job.objects.filter(user_id=user.id).exclude(input_path__isnull=True):
+        delete_upload(job.input_path)
+    Job.objects.filter(user_id=user.id).delete()
+    User.objects.filter(pk=user.id).delete()
+    return JsonResponse({"deleted": True})
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -164,7 +236,7 @@ def identify(request):
     upload = request.FILES.get("file")
     if not upload:
         return _error("A file field is required.")
-    filename = (upload.name or "upload").replace("\\\\", "/").split("/")[-1][:180]
+    filename = (upload.name or "upload").replace("\\", "/").split("/")[-1][:180]
     mime = (upload.content_type or "application/octet-stream").lower().split(";", 1)[0].strip()
     try:
         kind = detect_kind(filename, mime)
@@ -215,7 +287,7 @@ def get_job(request, job_id):
     user = _user_from_request(request)
     if job.user_id and (user is None or user.id != job.user_id):
         return _error("Job not found or expired.", 404)
-    return JsonResponse(_job_json(job))
+    return _json_ok(_job_json(job))
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -224,6 +296,12 @@ def submit_feedback(request):
     payload = _json_body(request)
     if not payload or not payload.get("job_id") or payload.get("verdict") not in {"correct", "wrong", "unknown"}:
         return _error("job_id and a valid verdict are required.")
+    for field in ("predicted_title_id", "correct_title_id"):
+        value = payload.get(field)
+        if value is not None and (not isinstance(value, str) or len(value) > 128):
+            return _error(f"{field} must be a string of at most 128 characters.")
+    if payload.get("note") is not None and (not isinstance(payload["note"], str) or len(payload["note"]) > 1000):
+        return _error("note must be at most 1000 characters.")
     job = Job.objects.filter(pk=payload["job_id"]).first()
     if not job:
         return _error("The referenced job was not found.", 404)
@@ -238,7 +316,16 @@ def submit_feedback(request):
 @require_http_methods(["GET"])
 def title_detail(request, title_id):
     from core.models import MetadataCache
+    if len(title_id) > 128:
+        return _error("Invalid title id.")
     title = get_title(title_id)
+    if not title and title_id.startswith(("tvmaze-", "itunes-")):
+        from app.services.metadata import itunes_by_id, tvmaze_by_id
+        prefix, _, raw_id = title_id.partition("-")
+        if raw_id.isdigit():
+            found = tvmaze_by_id(int(raw_id)) if prefix == "tvmaze" else itunes_by_id(int(raw_id))
+            if found:
+                return JsonResponse({**found, "title_id": title_id, "kind": "series" if prefix == "tvmaze" else "movie"})
     if not title and title_id.startswith("anilist-") and title_id.removeprefix("anilist-").isdigit():
         from app.services.metadata import anilist_by_id
         found = anilist_by_id(int(title_id.removeprefix("anilist-")))
@@ -269,9 +356,11 @@ def accuracy_stats(request):
             report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         logger.warning("Evaluation report could not be read")
-    counts = {v: Feedback.objects.filter(verdict=v).count() for v in ("correct", "wrong", "unknown")}
+    counts = {v: 0 for v in ("correct", "wrong", "unknown")}
+    counts.update({row["verdict"]: row["n"] for row in Feedback.objects.values("verdict").annotate(n=Count("id"))
+                   if row["verdict"] in counts})
     return JsonResponse({"evaluation_available": report is not None, "evaluation": report,
-        "feedback_count": Feedback.objects.count(), "feedback_verdicts": counts,
+        "feedback_count": sum(counts.values()), "feedback_verdicts": counts,
         "disclaimer": "Accuracy is not claimed until a labeled evaluation set has been run." if report is None else "Metrics are from the labeled fixture set, not a guarantee for arbitrary uploads."})
 
 @csrf_exempt
@@ -281,11 +370,19 @@ def submit_takedown(request):
     payload = _json_body(request)
     if not payload or not payload.get("source_url") or not payload.get("reason"):
         return _error("source_url and reason are required.")
-    parsed = urlparse(str(payload["source_url"]))
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return _error("source_url must be an http(s) URL.")
-    item = TakedownRequest.objects.create(source_url=str(payload["source_url"]), reason=str(payload["reason"]),
-        contact_email=payload.get("contact_email"))
+    source_url, reason = str(payload["source_url"]).strip(), str(payload["reason"]).strip()
+    parsed = urlparse(source_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or len(source_url) > 2000:
+        return _error("source_url must be an http(s) URL of at most 2000 characters.")
+    if not 10 <= len(reason) <= 4000:
+        return _error("reason must be between 10 and 4000 characters.")
+    email = (str(payload.get("contact_email") or "")).strip() or None
+    if email:
+        try:
+            validate_email(email)
+        except ValidationError:
+            return _error("contact_email is not a valid email address.")
+    item = TakedownRequest.objects.create(source_url=source_url, reason=reason, contact_email=email)
     return JsonResponse({"id": item.id, "status": "received", "message": "The removal request has been recorded for review."}, status=202)
 
 @require_http_methods(["GET"])
